@@ -26,7 +26,7 @@ async function authorize(
 }
 
 export function withAuth(handler: Handler, allowedRoles?: UserRole[]) {
-  return async (request: Request, routeCtx?: RouteContext): Promise<Response> => {
+  return async (request: Request, routeCtx: RouteContext): Promise<Response> => {
     const auth = await authorize(request, allowedRoles);
     if (auth instanceof Response) return auth;
 
