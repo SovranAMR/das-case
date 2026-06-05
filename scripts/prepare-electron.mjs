@@ -67,7 +67,7 @@ const electronVersion = JSON.parse(
 
 console.log(`\nRebuilding better-sqlite3 for Electron v${electronVersion} ...`);
 run(
-  `npx electron-rebuild -f -w better-sqlite3 -v ${electronVersion}`,
+  `npx @electron/rebuild -f -w better-sqlite3 -v ${electronVersion}`,
 );
 
 // 4. Copy native addon into standalone
