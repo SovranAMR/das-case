@@ -4,9 +4,11 @@ import fs from "fs";
 import path from "path";
 import * as schema from "./schema";
 
+type AppDb = ReturnType<typeof drizzle<typeof schema>>;
+
 const globalForDb = globalThis as unknown as {
   sqlite?: Database.Database;
-  db?: ReturnType<typeof drizzle<typeof schema>>;
+  db?: AppDb;
 };
 
 function getDatabasePath(): string {
@@ -31,10 +33,19 @@ function createDatabase() {
   return drizzle(sqlite, { schema });
 }
 
-export const db = globalForDb.db ?? createDatabase();
-
-if (process.env.NODE_ENV !== "production") {
-  globalForDb.db = db;
+function getDb(): AppDb {
+  if (!globalForDb.db) {
+    globalForDb.db = createDatabase();
+  }
+  return globalForDb.db;
 }
+
+export const db = new Proxy({} as AppDb, {
+  get(_target, prop, receiver) {
+    const instance = getDb();
+    const value = Reflect.get(instance, prop, receiver) as unknown;
+    return typeof value === "function" ? value.bind(instance) : value;
+  },
+});
 
 export { schema };
