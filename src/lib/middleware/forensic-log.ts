@@ -1,5 +1,4 @@
 import { randomUUID } from "crypto";
-import { db } from "@/lib/db";
 import { requestLogs } from "@/lib/db/schema";
 
 const MAX_BODY_LENGTH = 4096;
@@ -32,6 +31,11 @@ function getPlatform(request: Request): string | null {
   return null;
 }
 
+async function getDb() {
+  const { db } = await import("@/lib/db");
+  return db;
+}
+
 export async function logApiRequest(
   request: Request,
   userId: string | null,
@@ -43,6 +47,7 @@ export async function logApiRequest(
   const body = bodyText ? bodyText.slice(0, MAX_BODY_LENGTH) : null;
 
   try {
+    const db = await getDb();
     await db.insert(requestLogs).values({
       id: randomUUID(),
       method: request.method,

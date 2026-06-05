@@ -1,7 +1,6 @@
 import { cookies } from "next/headers";
 import { eq, lt } from "drizzle-orm";
 import { randomBytes } from "crypto";
-import { db } from "@/lib/db";
 import { sessions, users } from "@/lib/db/schema";
 import type { UserRole } from "@/lib/types";
 
@@ -26,7 +25,13 @@ function useSecureCookies(): boolean {
   return process.env.NODE_ENV === "production";
 }
 
+async function getDb() {
+  const { db } = await import("@/lib/db");
+  return db;
+}
+
 export async function createSession(userId: string): Promise<string> {
+  const db = await getDb();
   await db.delete(sessions).where(eq(sessions.userId, userId));
 
   const sessionId = generateSessionId();
@@ -55,6 +60,7 @@ export async function destroySession(): Promise<void> {
   const sessionId = cookieStore.get(SESSION_COOKIE)?.value;
 
   if (sessionId) {
+    const db = await getDb();
     await db.delete(sessions).where(eq(sessions.id, sessionId));
     cookieStore.delete(SESSION_COOKIE);
   }
@@ -65,6 +71,7 @@ export async function getSessionUser(): Promise<SessionUser | null> {
   const sessionId = cookieStore.get(SESSION_COOKIE)?.value;
   if (!sessionId) return null;
 
+  const db = await getDb();
   const now = new Date();
   const result = await db
     .select({
@@ -107,6 +114,7 @@ export async function requireSessionUser(): Promise<SessionUser> {
 }
 
 export async function cleanupExpiredSessions(): Promise<void> {
+  const db = await getDb();
   const now = new Date();
   await db.delete(sessions).where(lt(sessions.expiresAt, now));
 }
