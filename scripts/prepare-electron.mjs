@@ -71,13 +71,26 @@ run(
   { cwd: path.join(ROOT, "node_modules", "better-sqlite3") },
 );
 
-// 4. Copy native addon into standalone
+// 4. Copy native addon into standalone (hash-suffixed dirs too)
 const betterSqlite3Path = path.join(ROOT, "node_modules", "better-sqlite3");
-const standaloneBS3 = path.join(standalone, "node_modules", "better-sqlite3");
+const standaloneNM = path.join(standalone, "node_modules");
 
 if (fs.existsSync(betterSqlite3Path)) {
   console.log("\nCopying better-sqlite3 native module ...");
-  copyDir(betterSqlite3Path, standaloneBS3);
+
+  // Copy to canonical name
+  copyDir(betterSqlite3Path, path.join(standaloneNM, "better-sqlite3"));
+
+  // Also copy to any hash-suffixed variants Next.js standalone creates
+  if (fs.existsSync(standaloneNM)) {
+    const hashDirs = fs.readdirSync(standaloneNM).filter((d) =>
+      d.startsWith("better-sqlite3-") && d !== "better-sqlite3"
+    );
+    for (const dir of hashDirs) {
+      console.log(`  → also copying to ${dir}`);
+      copyDir(betterSqlite3Path, path.join(standaloneNM, dir));
+    }
+  }
 }
 
 // 5. Copy drizzle migrations
