@@ -1,0 +1,21 @@
+DAS Case — Kullanım Sözleşmesi
+
+Bu yazılım DAS Systems tarafından ücretsiz olarak dağıtılmaktadır.
+
+1. LİSANS
+Bu yazılımı ticari veya kişisel amaçla ücretsiz kullanabilirsiniz.
+Yazılımın kaynak kodunu değiştirmeniz, dağıtmanız veya satmanız yasaktır.
+
+2. GARANTİ REDDİ
+Bu yazılım "OLDUĞU GİBİ" sunulmaktadır. DAS Systems, yazılımın kullanımından
+doğabilecek herhangi bir zarardan sorumlu tutulamaz.
+
+3. KİŞİSEL VERİLER (KVKK)
+DAS Case, tüm verileri yalnızca yerel bilgisayarınızda (SQLite veritabanı)
+saklar. İnternet üzerinden herhangi bir sunucuya veri gönderilmez.
+Verilerinizin güvenliği tamamen sizin sorumluluğunuzdadır.
+
+4. DESTEK
+Destek ve iletişim: info@dassystems.com.tr
+
+© 2026 DAS Systems. Tüm hakları saklıdır.

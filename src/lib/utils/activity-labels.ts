@@ -1,0 +1,35 @@
+const ACTION_LABELS: Record<string, string> = {
+  CASE_CREATED: "Dosya oluşturuldu",
+  CASE_UPDATED: "Dosya güncellendi",
+  CASE_DELETED: "Dosya silindi",
+  CASE_RESTORED: "Dosya geri alındı",
+  TASK_CREATED: "İş oluşturuldu",
+  TASK_UPDATED: "İş güncellendi",
+  TASK_COMPLETED: "İş tamamlandı",
+  TASK_ARCHIVED: "İş arşivlendi",
+  TASK_UNARCHIVED: "İş arşivden çıkarıldı",
+  TASK_STATUS_CHANGED: "İş durumu değişti",
+  TASK_DEADLINE_CHANGED: "Son tarih değişti",
+  TASK_DELETED: "İş silindi",
+  TASK_RESTORED: "İş geri alındı",
+  TASK_ESCALATED: "İş yöneticiye bildirildi",
+  CASE_EVENT_UPDATED: "Süreç olayı güncellendi",
+  CASE_EVENT_DELETED: "Süreç olayı silindi",
+  CASE_EVENT_RESTORED: "Süreç olayı geri alındı",
+  CASE_NOTE_RESTORED: "Not geri alındı",
+  NOTE_ADDED: "Not eklendi",
+  NOTE_UPDATED: "Not güncellendi",
+  NOTE_DELETED: "Not silindi",
+  EVENT_ADDED: "Süreç olayı eklendi",
+  EVENT_UPDATED: "Süreç olayı güncellendi",
+  EVENT_DELETED: "Süreç olayı silindi",
+  STAGE_CHANGED: "Aşama değiştirildi",
+  USER_CREATED: "Kullanıcı oluşturuldu",
+  USER_UPDATED: "Kullanıcı güncellendi",
+  USER_DELETED: "Kullanıcı silindi",
+  USER_BULK_IMPORTED: "Toplu kullanıcı içe aktarıldı",
+};
+
+export function getActivityLabel(action: string): string {
+  return ACTION_LABELS[action] ?? action;
+}

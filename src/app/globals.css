@@ -1,0 +1,109 @@
+@import "tailwindcss";
+
+@theme {
+  /* DAS Systems — dassystems.com.tr */
+  --color-bg: #F7F4EF;
+  --color-bg-elevated: #F5F1E8;
+  --color-bg-surface: #FAF8F3;
+  --color-text-primary: #151515;
+  --color-text-secondary: #5a5a5a;
+  --color-text-tertiary: #5c5c5c;
+  --color-border: rgba(0, 0, 0, 0.1);
+  --color-border-strong: rgba(0, 0, 0, 0.14);
+
+  /* Uygulama alias'ları (mevcut bileşenlerle uyum) */
+  --color-background: #F7F4EF;
+  --color-foreground: #151515;
+  --color-card: #FAF8F3;
+  --color-muted: #5a5a5a;
+  --color-primary: #151515;
+  --color-primary-hover: #333333;
+  --color-accent: #151515;
+
+  --font-serif: "Instrument Serif", Georgia, serif;
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-sans);
+  color: var(--color-text-primary);
+  background-color: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background-color: rgba(0, 0, 0, 0.08);
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-serif);
+  line-height: 1.1;
+  letter-spacing: -0.022em;
+  text-wrap: balance;
+}
+
+p {
+  line-height: 1.65;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-text-primary);
+  outline-offset: 2px;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(21, 21, 21, 0.2);
+}
+
+.das-page-title {
+  font-family: var(--font-serif);
+  font-size: clamp(1.75rem, 3vw, 2.25rem);
+  line-height: 1.08;
+  letter-spacing: -0.022em;
+}
+
+.das-section-label {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+}
+
+@media print {
+  body {
+    background: #fff;
+  }
+
+  header,
+  aside,
+  .print\:hidden,
+  .das-app-footer {
+    display: none !important;
+  }
+
+  main {
+    padding: 0 !important;
+  }
+
+  #case-timeline-print,
+  #weekly-report-print {
+    break-inside: avoid;
+    border: none;
+    box-shadow: none;
+  }
+}

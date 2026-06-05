@@ -1,0 +1,12 @@
+services:
+  is-takibi:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=./data/app.db
+      - SESSION_SECRET=${SESSION_SECRET}
+      - NODE_ENV=production
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
