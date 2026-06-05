@@ -63,6 +63,6 @@ dmg:
 
 publish:
   provider: github
-  owner: dassystems
+  owner: SovranAMR
   repo: das-case
   releaseType: release
