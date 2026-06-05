@@ -65,9 +65,10 @@ const electronVersion = JSON.parse(
   fs.readFileSync(path.join(ROOT, "node_modules", "electron", "package.json"), "utf-8"),
 ).version;
 
-console.log(`\nRebuilding better-sqlite3 for Electron v${electronVersion} ...`);
+console.log(`\nInstalling better-sqlite3 prebuilt for Electron v${electronVersion} ...`);
 run(
-  `npx @electron/rebuild -f -w better-sqlite3 -v ${electronVersion}`,
+  `npx prebuild-install -r electron -t ${electronVersion} --tag-prefix v`,
+  { cwd: path.join(ROOT, "node_modules", "better-sqlite3") },
 );
 
 // 4. Copy native addon into standalone
