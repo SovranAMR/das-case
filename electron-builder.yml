@@ -6,14 +6,24 @@ directories:
   output: release
   buildResources: assets
 
+npmRebuild: false
+
 files:
   - dist-electron/**/*
-  - .next/standalone/**/*
-  - drizzle/**/*
+  - node_modules/better-sqlite3/**/*
+  - node_modules/bindings/**/*
+  - node_modules/file-uri-to-path/**/*
+
+asarUnpack:
+  - node_modules/better-sqlite3/**/*
 
 extraResources:
   - from: .next/standalone
     to: app
+    filter:
+      - "**/*"
+  - from: assets
+    to: app/assets
     filter:
       - "**/*"
 
@@ -22,7 +32,7 @@ win:
     - target: nsis
       arch:
         - x64
-  icon: assets/icon.ico
+  icon: assets/icon.png
   artifactName: "DASCase-Setup-${version}.${ext}"
 
 nsis:
@@ -31,9 +41,6 @@ nsis:
   installerLanguages:
     - Turkish
   language: 1055
-  installerIcon: assets/icon.ico
-  uninstallerIcon: assets/icon.ico
-  installerHeaderIcon: assets/icon.ico
   deleteAppDataOnUninstall: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
@@ -45,7 +52,6 @@ mac:
   target:
     - target: dmg
       arch:
-        - x64
         - arm64
   icon: assets/icon.png
   category: public.app-category.business

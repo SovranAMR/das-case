@@ -165,8 +165,7 @@ function createWindow(url: string): void {
 }
 
 function getIconPath(): string {
-  const iconName = process.platform === "win32" ? "icon.ico" : "icon.png";
-  return getResourcePath("assets", iconName);
+  return getResourcePath("assets", "icon.png");
 }
 
 // ──── SERVER MODE TRAY ────
