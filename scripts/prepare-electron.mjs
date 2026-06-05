@@ -36,6 +36,32 @@ function copyDir(src, dest) {
   }
 }
 
+function materializeSymlink(src, dest) {
+  const realSrc = fs.realpathSync(src);
+  fs.rmSync(dest, { recursive: true, force: true });
+  const stat = fs.statSync(realSrc);
+  if (stat.isDirectory()) {
+    copyDir(realSrc, dest);
+  } else {
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(realSrc, dest);
+  }
+}
+
+function materializeNextNodeModuleSymlinks(standaloneDir) {
+  const nextNodeModules = path.join(standaloneDir, ".next", "node_modules");
+  if (!fs.existsSync(nextNodeModules)) return;
+
+  console.log("\nMaterializing .next/node_modules symlinks ...");
+  for (const entry of fs.readdirSync(nextNodeModules, { withFileTypes: true })) {
+    const modulePath = path.join(nextNodeModules, entry.name);
+    if (!entry.isSymbolicLink()) continue;
+
+    console.log(`  → ${entry.name}`);
+    materializeSymlink(modulePath, modulePath);
+  }
+}
+
 console.log("=== DAS Case Electron Build Prep ===\n");
 
 // 1. Next.js build
@@ -93,19 +119,22 @@ if (fs.existsSync(betterSqlite3Path)) {
   }
 }
 
-// 5. Copy drizzle migrations
+// 5. Replace Next.js standalone symlinks with real directories for electron-builder
+materializeNextNodeModuleSymlinks(standalone);
+
+// 6. Copy drizzle migrations
 const drizzleSrc = path.join(ROOT, "drizzle");
 const drizzleDest = path.join(standalone, "drizzle");
 console.log("\nCopying drizzle migrations ...");
 copyDir(drizzleSrc, drizzleDest);
 
-// 6. Copy assets (icons for tray/window)
+// 7. Copy assets (icons for tray/window)
 const assetsSrc = path.join(ROOT, "assets");
 const assetsDest = path.join(standalone, "assets");
 console.log("\nCopying assets/ ...");
 copyDir(assetsSrc, assetsDest);
 
-// 7. Copy migration script
+// 8. Copy migration script
 const migrateSrc = path.join(ROOT, "scripts", "migrate.ts");
 const migrateDest = path.join(standalone, "scripts", "migrate.ts");
 fs.mkdirSync(path.join(standalone, "scripts"), { recursive: true });
