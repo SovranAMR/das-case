@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-const PUBLIC_PATHS = ["/giris", "/api/auth/login"];
+const PUBLIC_PATHS = ["/giris", "/api/auth/login", "/api/discovery"];
 const SESSION_COOKIE = "is_takibi_session";
 
 function isPublicPath(pathname: string): boolean {

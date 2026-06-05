@@ -2,15 +2,12 @@ import { BrowserWindow, ipcMain } from "electron";
 import path from "path";
 import fs from "fs";
 import Database from "better-sqlite3";
-import { randomUUID, randomBytes } from "crypto";
+import { randomUUID } from "crypto";
+import { saveConfig, type AppMode } from "./client-config";
+import { scanForServers, type DiscoveredServer } from "./lan-discovery";
 
-/**
- * Checks whether the database already has at least one admin user.
- * Returns true if setup is needed (no admin exists).
- */
 export function needsSetup(dbPath: string): boolean {
   if (!fs.existsSync(dbPath)) return true;
-
   try {
     const sqlite = new Database(dbPath, { readonly: true });
     const row = sqlite
@@ -23,17 +20,12 @@ export function needsSetup(dbPath: string): boolean {
   }
 }
 
-/**
- * Runs DB migrations using drizzle migrator.
- */
 export function runMigrations(dbPath: string, migrationsFolder: string): void {
   const dir = path.dirname(dbPath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
   const sqlite = new Database(dbPath);
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
-
   const { drizzle } = require("drizzle-orm/better-sqlite3");
   const { migrate } = require("drizzle-orm/better-sqlite3/migrator");
   const db = drizzle(sqlite);
@@ -48,16 +40,17 @@ type SetupData = {
   officeName: string;
 };
 
-/**
- * Creates the admin user directly in SQLite.
- */
+export type SetupResult = {
+  mode: AppMode;
+  serverUrl?: string;
+  officeName?: string;
+};
+
 async function createAdmin(dbPath: string, data: SetupData): Promise<void> {
   const bcrypt = require("bcryptjs");
   const hash = await bcrypt.hash(data.password, 12);
-
   const sqlite = new Database(dbPath);
   sqlite.pragma("foreign_keys = ON");
-
   const id = randomUUID();
   sqlite
     .prepare(
@@ -65,33 +58,20 @@ async function createAdmin(dbPath: string, data: SetupData): Promise<void> {
        VALUES (?, ?, ?, ?, 'ADMIN', 1, 0)`,
     )
     .run(id, data.email, data.name, hash);
-
   sqlite
-    .prepare(
-      `INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`,
-    )
+    .prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`)
     .run("office_name", data.officeName);
-
   sqlite
-    .prepare(
-      `INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`,
-    )
-    .run(
-      "default_reminder_offsets",
-      JSON.stringify([24 * 60, 60, 15]),
-    );
-
+    .prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`)
+    .run("default_reminder_offsets", JSON.stringify([24 * 60, 60, 15]));
   sqlite.close();
 }
 
-/**
- * Shows a setup wizard window and returns the data once submitted.
- */
-export function showSetupWizard(dbPath: string): Promise<void> {
+export function showSetupWizard(dbPath: string): Promise<SetupResult> {
   return new Promise((resolve, reject) => {
     const win = new BrowserWindow({
-      width: 520,
-      height: 620,
+      width: 560,
+      height: 680,
       resizable: false,
       minimizable: false,
       maximizable: false,
@@ -102,33 +82,81 @@ export function showSetupWizard(dbPath: string): Promise<void> {
         preload: path.join(__dirname, "setup-preload.js"),
       },
     });
-
     win.setMenuBarVisibility(false);
 
     const html = getSetupHTML();
     win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
 
-    ipcMain.once("setup-submit", async (_event, data: SetupData) => {
+    function cleanup() {
+      ipcMain.removeAllListeners("setup-role");
+      ipcMain.removeAllListeners("setup-server-submit");
+      ipcMain.removeAllListeners("setup-client-scan");
+      ipcMain.removeAllListeners("setup-client-connect");
+      ipcMain.removeAllListeners("setup-cancel");
+    }
+
+    ipcMain.on("setup-role", (_event, role: string) => {
+      if (role === "server") {
+        win.webContents.send("show-page", "server");
+      } else {
+        win.webContents.send("show-page", "client-scanning");
+        void scanForServers(4000).then((servers) => {
+          win.webContents.send("scan-results", servers);
+        });
+      }
+    });
+
+    ipcMain.on("setup-client-scan", () => {
+      win.webContents.send("show-page", "client-scanning");
+      void scanForServers(4000).then((servers) => {
+        win.webContents.send("scan-results", servers);
+      });
+    });
+
+    ipcMain.on(
+      "setup-client-connect",
+      (_event, server: { host: string; port: number; name: string }) => {
+        const serverUrl = `http://${server.host}:${server.port}`;
+        const config: SetupResult = {
+          mode: "client",
+          serverUrl,
+          officeName: server.name,
+        };
+        saveConfig(config);
+        cleanup();
+        win.close();
+        resolve(config);
+      },
+    );
+
+    ipcMain.on("setup-server-submit", async (_event, data: SetupData) => {
       try {
         await createAdmin(dbPath, data);
+        const config: SetupResult = {
+          mode: "server",
+          officeName: data.officeName,
+        };
+        saveConfig(config);
+        cleanup();
         win.close();
-        resolve();
+        resolve(config);
       } catch (err) {
         win.webContents.send(
           "setup-error",
           err instanceof Error ? err.message : String(err),
         );
-        reject(err);
       }
     });
 
-    ipcMain.once("setup-cancel", () => {
+    ipcMain.on("setup-cancel", () => {
+      cleanup();
       win.close();
       reject(new Error("Kurulum iptal edildi"));
     });
 
     win.on("closed", () => {
-      resolve();
+      cleanup();
+      resolve({ mode: "client" });
     });
   });
 }
@@ -142,143 +170,243 @@ function getSetupHTML(): string {
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
     font-family: Inter, system-ui, sans-serif;
-    background: #F7F4EF;
-    color: #151515;
+    background: #F7F4EF; color: #151515;
     padding: 40px 36px;
     -webkit-font-smoothing: antialiased;
   }
   .label {
     font-family: ui-monospace, monospace;
-    font-size: 11px;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: #5c5c5c;
-    margin-bottom: 8px;
+    font-size: 11px; letter-spacing: 0.15em;
+    text-transform: uppercase; color: #5c5c5c; margin-bottom: 8px;
   }
   h1 {
     font-family: 'Instrument Serif', Georgia, serif;
-    font-size: 28px;
-    line-height: 1.1;
-    margin-bottom: 8px;
+    font-size: 28px; line-height: 1.1; margin-bottom: 8px;
   }
-  .subtitle {
-    color: #5a5a5a;
-    font-size: 14px;
-    line-height: 1.5;
-    margin-bottom: 28px;
+  .subtitle { color: #5a5a5a; font-size: 14px; line-height: 1.5; margin-bottom: 24px; }
+  .page { display: none; }
+  .page.active { display: block; }
+
+  .role-btn {
+    display: block; width: 100%; text-align: left;
+    padding: 20px; margin-bottom: 12px;
+    border: 1px solid rgba(0,0,0,0.12); border-radius: 6px;
+    background: white; cursor: pointer;
+    transition: border-color 0.15s, box-shadow 0.15s;
   }
-  .field { margin-bottom: 16px; }
-  .field label {
-    display: block;
-    font-size: 13px;
-    font-weight: 500;
-    margin-bottom: 6px;
+  .role-btn:hover { border-color: #151515; box-shadow: 0 0 0 1px #151515; }
+  .role-btn h3 {
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-size: 18px; margin-bottom: 4px;
   }
+  .role-btn p { font-size: 13px; color: #5a5a5a; line-height: 1.4; }
+
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 5px; }
   .field input {
-    width: 100%;
-    padding: 10px 12px;
-    border: 1px solid rgba(0,0,0,0.12);
-    border-radius: 4px;
-    font-size: 14px;
-    background: white;
-    outline: none;
-    transition: border-color 0.15s;
+    width: 100%; padding: 10px 12px;
+    border: 1px solid rgba(0,0,0,0.12); border-radius: 4px;
+    font-size: 14px; background: white; outline: none;
   }
-  .field input:focus {
-    border-color: #151515;
-  }
-  .actions {
-    display: flex;
-    gap: 12px;
-    margin-top: 24px;
-  }
-  button {
-    padding: 11px 24px;
-    font-size: 14px;
-    font-weight: 500;
-    border: none;
-    cursor: pointer;
-    border-radius: 4px;
-  }
-  .btn-primary {
-    background: #151515;
-    color: #F7F4EF;
-    flex: 1;
-  }
+  .field input:focus { border-color: #151515; }
+
+  button { padding: 11px 24px; font-size: 14px; font-weight: 500; border: none; cursor: pointer; border-radius: 4px; }
+  .btn-primary { background: #151515; color: #F7F4EF; }
   .btn-primary:hover { opacity: 0.9; }
-  .btn-secondary {
-    background: transparent;
-    border: 1px solid rgba(0,0,0,0.12);
-    color: #5a5a5a;
+  .btn-secondary { background: transparent; border: 1px solid rgba(0,0,0,0.12); color: #5a5a5a; }
+  .btn-link { background: none; border: none; color: #5a5a5a; font-size: 13px; cursor: pointer; padding: 8px 0; }
+  .btn-link:hover { color: #151515; }
+
+  .actions { display: flex; gap: 12px; margin-top: 20px; }
+  .error { color: #dc2626; font-size: 13px; margin-top: 8px; display: none; }
+
+  .spinner {
+    width: 32px; height: 32px; border: 3px solid rgba(0,0,0,0.1);
+    border-top-color: #151515; border-radius: 50%;
+    animation: spin 0.8s linear infinite; margin: 24px auto;
   }
-  .error {
-    color: #dc2626;
-    font-size: 13px;
-    margin-top: 8px;
-    display: none;
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .server-item {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px; margin-bottom: 8px;
+    border: 1px solid rgba(0,0,0,0.12); border-radius: 6px;
+    background: white;
   }
+  .server-item .info h4 { font-size: 15px; font-weight: 600; }
+  .server-item .info p { font-size: 12px; color: #5a5a5a; margin-top: 2px; }
+
+  .manual-row { display: flex; gap: 8px; margin-top: 16px; }
+  .manual-row input { flex: 1; }
 </style>
 </head>
 <body>
-  <p class="label">İlk Kurulum</p>
-  <h1>DAS Case</h1>
-  <p class="subtitle">
-    Büro yöneticisi hesabını oluşturun. Bu hesapla giriş yapıp
-    diğer kullanıcıları ekleyebilirsiniz.
-  </p>
-  <form id="form">
-    <div class="field">
-      <label>Büro Adı *</label>
-      <input id="officeName" required placeholder="ör. Yılmaz Hukuk Bürosu" />
-    </div>
-    <div class="field">
-      <label>Yönetici Adı *</label>
-      <input id="name" required placeholder="ör. Av. Mehmet Yılmaz" />
-    </div>
-    <div class="field">
-      <label>E-posta *</label>
-      <input id="email" type="email" required placeholder="admin@buro.local" />
-    </div>
-    <div class="field">
-      <label>Şifre * (min 8 karakter)</label>
-      <input id="password" type="password" required minlength="8" />
-    </div>
-    <div class="field">
-      <label>Şifre Tekrar *</label>
-      <input id="confirm" type="password" required minlength="8" />
-    </div>
-    <p class="error" id="error"></p>
-    <div class="actions">
-      <button type="submit" class="btn-primary">Kurulumu Tamamla</button>
-    </div>
-  </form>
-  <script>
-    const form = document.getElementById('form');
-    const errorEl = document.getElementById('error');
 
-    form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const pw = document.getElementById('password').value;
-      const confirm = document.getElementById('confirm').value;
-      if (pw !== confirm) {
-        errorEl.textContent = 'Şifreler eşleşmiyor.';
-        errorEl.style.display = 'block';
-        return;
-      }
-      errorEl.style.display = 'none';
-      window.setupBridge.submit({
-        email: document.getElementById('email').value,
-        password: pw,
-        name: document.getElementById('name').value,
-        officeName: document.getElementById('officeName').value,
-      });
-    });
+  <!-- PAGE: Role Selection -->
+  <div id="page-role" class="page active">
+    <p class="label">İlk Kurulum</p>
+    <h1>DAS Case</h1>
+    <p class="subtitle">Bu bilgisayarın rolünü seçin.</p>
 
-    window.setupBridge?.onError?.((msg) => {
-      errorEl.textContent = msg;
-      errorEl.style.display = 'block';
+    <button class="role-btn" onclick="selectRole('server')">
+      <h3>Sunucu (Yönetici PC)</h3>
+      <p>Veritabanı bu bilgisayarda durur. Diğer bilgisayarlar buraya bağlanır.</p>
+    </button>
+
+    <button class="role-btn" onclick="selectRole('client')">
+      <h3>İstemci (Sekreter / Avukat PC)</h3>
+      <p>Ağdaki sunucuya bağlanır. Bu bilgisayarda veri tutulmaz.</p>
+    </button>
+  </div>
+
+  <!-- PAGE: Server Setup -->
+  <div id="page-server" class="page">
+    <p class="label">Sunucu Kurulumu</p>
+    <h1>Yönetici Hesabı</h1>
+    <p class="subtitle">Bu hesapla giriş yapıp diğer kullanıcıları ekleyebilirsiniz.</p>
+    <form id="serverForm">
+      <div class="field">
+        <label>Büro Adı *</label>
+        <input id="officeName" required placeholder="ör. Yılmaz Hukuk Bürosu" />
+      </div>
+      <div class="field">
+        <label>Yönetici Adı *</label>
+        <input id="adminName" required placeholder="ör. Av. Mehmet Yılmaz" />
+      </div>
+      <div class="field">
+        <label>E-posta *</label>
+        <input id="email" type="email" required placeholder="admin@buro.local" />
+      </div>
+      <div class="field">
+        <label>Şifre * (min 8 karakter)</label>
+        <input id="password" type="password" required minlength="8" />
+      </div>
+      <div class="field">
+        <label>Şifre Tekrar *</label>
+        <input id="confirm" type="password" required minlength="8" />
+      </div>
+      <p class="error" id="serverError"></p>
+      <div class="actions">
+        <button type="button" class="btn-secondary" onclick="goBack()">Geri</button>
+        <button type="submit" class="btn-primary" style="flex:1">Kurulumu Tamamla</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- PAGE: Client Scanning -->
+  <div id="page-client-scanning" class="page">
+    <p class="label">İstemci Kurulumu</p>
+    <h1>Sunucu aranıyor...</h1>
+    <p class="subtitle">Ağınızdaki DAS Case sunucusu taranıyor.</p>
+    <div class="spinner"></div>
+    <div style="text-align:center">
+      <button class="btn-link" onclick="goBack()">Geri dön</button>
+    </div>
+  </div>
+
+  <!-- PAGE: Client Results -->
+  <div id="page-client-results" class="page">
+    <p class="label">İstemci Kurulumu</p>
+    <h1>Sunucu Seç</h1>
+    <p class="subtitle" id="resultSubtitle"></p>
+    <div id="serverList"></div>
+
+    <div style="margin-top:20px; border-top:1px solid rgba(0,0,0,0.08); padding-top:16px">
+      <p style="font-size:13px; color:#5a5a5a; margin-bottom:8px">Sunucu listede yoksa adresi elle girin:</p>
+      <div class="manual-row">
+        <input id="manualIP" placeholder="192.168.1.5" />
+        <button class="btn-primary" onclick="connectManual()">Bağlan</button>
+      </div>
+    </div>
+
+    <div class="actions" style="margin-top:16px">
+      <button class="btn-secondary" onclick="goBack()">Geri</button>
+      <button class="btn-secondary" onclick="rescan()">Tekrar Ara</button>
+    </div>
+  </div>
+
+<script>
+  function showPage(id) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.getElementById('page-' + id)?.classList.add('active');
+  }
+
+  function selectRole(role) {
+    window.setupBridge.selectRole(role);
+  }
+
+  function goBack() {
+    showPage('role');
+  }
+
+  function rescan() {
+    window.setupBridge.rescan();
+  }
+
+  function connectToServer(host, port, name) {
+    window.setupBridge.connectServer({ host, port, name });
+  }
+
+  function connectManual() {
+    const ip = document.getElementById('manualIP').value.trim();
+    if (!ip) return;
+    const port = ip.includes(':') ? parseInt(ip.split(':')[1]) : 3000;
+    const host = ip.split(':')[0];
+    connectToServer(host, port, 'DAS Case');
+  }
+
+  // Server form
+  document.getElementById('serverForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const pw = document.getElementById('password').value;
+    const confirm = document.getElementById('confirm').value;
+    const errEl = document.getElementById('serverError');
+    if (pw !== confirm) {
+      errEl.textContent = 'Şifreler eşleşmiyor.';
+      errEl.style.display = 'block';
+      return;
+    }
+    errEl.style.display = 'none';
+    window.setupBridge.submitServer({
+      email: document.getElementById('email').value,
+      password: pw,
+      name: document.getElementById('adminName').value,
+      officeName: document.getElementById('officeName').value,
     });
-  </script>
+  });
+
+  // IPC listeners
+  window.setupBridge.onShowPage((page) => showPage(page));
+
+  window.setupBridge.onScanResults((servers) => {
+    const list = document.getElementById('serverList');
+    const subtitle = document.getElementById('resultSubtitle');
+
+    if (servers.length === 0) {
+      subtitle.textContent = 'Ağınızda DAS Case sunucusu bulunamadı. Adresi elle girebilirsiniz.';
+      list.innerHTML = '';
+    } else {
+      subtitle.textContent = servers.length + ' sunucu bulundu:';
+      list.innerHTML = servers.map(s =>
+        '<div class="server-item">' +
+          '<div class="info">' +
+            '<h4>' + s.name + '</h4>' +
+            '<p>' + s.host + ':' + s.port + '</p>' +
+          '</div>' +
+          '<button class="btn-primary" onclick="connectToServer(\\'' + s.host + '\\',' + s.port + ',\\'' + s.name.replace(/'/g, "\\\\'") + '\\')">Bağlan</button>' +
+        '</div>'
+      ).join('');
+    }
+    showPage('client-results');
+  });
+
+  window.setupBridge.onError((msg) => {
+    const errEl = document.getElementById('serverError');
+    errEl.textContent = msg;
+    errEl.style.display = 'block';
+  });
+</script>
+
 </body>
 </html>`;
 }

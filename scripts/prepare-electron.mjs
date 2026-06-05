@@ -85,7 +85,13 @@ const drizzleDest = path.join(standalone, "drizzle");
 console.log("\nCopying drizzle migrations ...");
 copyDir(drizzleSrc, drizzleDest);
 
-// 6. Copy migration script
+// 6. Copy assets (icons for tray/window)
+const assetsSrc = path.join(ROOT, "assets");
+const assetsDest = path.join(standalone, "assets");
+console.log("\nCopying assets/ ...");
+copyDir(assetsSrc, assetsDest);
+
+// 7. Copy migration script
 const migrateSrc = path.join(ROOT, "scripts", "migrate.ts");
 const migrateDest = path.join(standalone, "scripts", "migrate.ts");
 fs.mkdirSync(path.join(standalone, "scripts"), { recursive: true });

@@ -13,7 +13,27 @@ import { ChildProcess, fork } from "child_process";
 import path from "path";
 import fs from "fs";
 import { networkInterfaces } from "os";
-import { needsSetup, runMigrations, showSetupWizard } from "./setup-wizard";
+import {
+  needsSetup,
+  runMigrations,
+  showSetupWizard,
+  type SetupResult,
+} from "./setup-wizard";
+import {
+  loadConfig,
+  saveConfig,
+  getAppMode,
+  getServerUrl,
+  type AppMode,
+} from "./client-config";
+import { startDiscoveryServer } from "./lan-discovery";
+import {
+  startAutoBackup,
+  stopAutoBackup,
+  checkpointAndVerify,
+  runBackup,
+} from "./auto-backup";
+import type dgram from "dgram";
 
 const PORT = 3000;
 const isDev = !app.isPackaged;
@@ -21,12 +41,19 @@ const isDev = !app.isPackaged;
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let serverProcess: ChildProcess | null = null;
+let discoverySocket: dgram.Socket | null = null;
+let currentMode: AppMode | null = null;
 
 function getResourcePath(...segments: string[]): string {
   const base = isDev
     ? path.join(__dirname, "..")
     : path.join(process.resourcesPath, "app");
   return path.join(base, ...segments);
+}
+
+function getStandalonePath(...segments: string[]): string {
+  if (isDev) return path.join(__dirname, "..", ".next", "standalone", ...segments);
+  return path.join(process.resourcesPath, "app", ...segments);
 }
 
 function getDataPath(): string {
@@ -50,7 +77,7 @@ function getLanAddress(): string {
 
 function startNextServer(): Promise<void> {
   return new Promise((resolve, reject) => {
-    const serverJs = getResourcePath(".next", "standalone", "server.js");
+    const serverJs = getStandalonePath("server.js");
     if (!fs.existsSync(serverJs)) {
       reject(new Error(`server.js bulunamadı: ${serverJs}`));
       return;
@@ -60,7 +87,7 @@ function startNextServer(): Promise<void> {
     const dbPath = path.join(dataPath, "app.db");
 
     const env: Record<string, string> = {
-      ...process.env as Record<string, string>,
+      ...(process.env as Record<string, string>),
       PORT: String(PORT),
       HOSTNAME: "0.0.0.0",
       DATABASE_URL: dbPath,
@@ -109,7 +136,7 @@ function startNextServer(): Promise<void> {
   });
 }
 
-function createWindow(): void {
+function createWindow(url: string): void {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -125,7 +152,7 @@ function createWindow(): void {
   });
 
   mainWindow.once("ready-to-show", () => mainWindow?.show());
-  mainWindow.loadURL(`http://localhost:${PORT}`);
+  mainWindow.loadURL(url);
 
   mainWindow.on("close", (e) => {
     e.preventDefault();
@@ -138,17 +165,18 @@ function createWindow(): void {
 }
 
 function getIconPath(): string {
-  const iconName =
-    process.platform === "win32" ? "icon.ico" : "icon.png";
+  const iconName = process.platform === "win32" ? "icon.ico" : "icon.png";
   return getResourcePath("assets", iconName);
 }
 
-function createTray(): void {
+// ──── SERVER MODE TRAY ────
+function createServerTray(): void {
   const icon = nativeImage.createFromPath(getIconPath());
   tray = new Tray(icon.resize({ width: 16, height: 16 }));
-  tray.setToolTip("DAS Case");
+  tray.setToolTip("DAS Case — Sunucu");
 
   const autoStartEnabled = app.getLoginItemSettings().openAtLogin;
+  const config = loadConfig();
 
   const menu = Menu.buildFromTemplate([
     {
@@ -158,7 +186,7 @@ function createTray(): void {
           mainWindow.show();
           mainWindow.focus();
         } else {
-          createWindow();
+          createWindow(`http://localhost:${PORT}`);
         }
       },
     },
@@ -168,14 +196,15 @@ function createTray(): void {
       click: () => shell.openExternal(`http://localhost:${PORT}`),
     },
     {
-      label: "LAN Adresini Kopyala",
+      label: "Bağlantı Bilgisi",
       click: () => {
         const addr = getLanAddress();
+        const officeName = config?.officeName ?? "DAS Case";
         clipboard.writeText(addr);
         dialog.showMessageBox({
           type: "info",
-          title: "Kopyalandı",
-          message: `LAN adresi panoya kopyalandı:\n${addr}`,
+          title: "Bağlantı Bilgisi",
+          message: `${officeName}\n\nLAN Adresi: ${addr}\n(Panoya kopyalandı)\n\nDiğer bilgisayarlarda DAS Case'i "İstemci" modunda kurarak bu sunucuya bağlanabilirsiniz.`,
         });
       },
     },
@@ -184,20 +213,24 @@ function createTray(): void {
       label: "Yedek Al",
       click: async () => {
         try {
-          const res = await fetch(`http://localhost:${PORT}/api/backup`);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const buf = Buffer.from(await res.arrayBuffer());
+          const dataPath = getDataPath();
+          const dbPath = path.join(dataPath, "app.db");
           const { filePath } = await dialog.showSaveDialog({
-            defaultPath: `is-takibi-backup-${new Date().toISOString().slice(0, 10)}.db`,
+            defaultPath: `dascase-yedek-${new Date().toISOString().slice(0, 10)}.db`,
             filters: [{ name: "SQLite Database", extensions: ["db"] }],
           });
           if (filePath) {
-            fs.writeFileSync(filePath, buf);
-            dialog.showMessageBox({
-              type: "info",
-              title: "Yedek alındı",
-              message: `Yedek kaydedildi: ${filePath}`,
-            });
+            const backupResult = runBackup(dbPath, dataPath);
+            if (backupResult) {
+              fs.copyFileSync(backupResult, filePath);
+              dialog.showMessageBox({
+                type: "info",
+                title: "Yedek alındı",
+                message: `Yedek kaydedildi: ${filePath}`,
+              });
+            } else {
+              dialog.showErrorBox("Yedek hatası", "Veritabanı bulunamadı.");
+            }
           }
         } catch (err) {
           dialog.showErrorBox(
@@ -236,6 +269,181 @@ function createTray(): void {
   });
 }
 
+// ──── CLIENT MODE TRAY ────
+function createClientTray(serverUrl: string): void {
+  const icon = nativeImage.createFromPath(getIconPath());
+  tray = new Tray(icon.resize({ width: 16, height: 16 }));
+
+  const config = loadConfig();
+  tray.setToolTip(`DAS Case — ${config?.officeName ?? "İstemci"}`);
+
+  const autoStartEnabled = app.getLoginItemSettings().openAtLogin;
+
+  const menu = Menu.buildFromTemplate([
+    {
+      label: "DAS Case'i Aç",
+      click: () => {
+        if (mainWindow) {
+          mainWindow.show();
+          mainWindow.focus();
+        } else {
+          createWindow(serverUrl);
+        }
+      },
+    },
+    { type: "separator" },
+    {
+      label: "Tarayıcıda Aç",
+      click: () => shell.openExternal(serverUrl),
+    },
+    {
+      label: `Sunucu: ${serverUrl}`,
+      enabled: false,
+    },
+    { type: "separator" },
+    {
+      label: "Sunucu Değiştir",
+      click: async () => {
+        mainWindow?.destroy();
+        mainWindow = null;
+        tray?.destroy();
+        tray = null;
+
+        if (config) {
+          config.mode = "client";
+          config.serverUrl = undefined;
+          config.officeName = undefined;
+          saveConfig(config);
+        }
+
+        const dbPath = path.join(getDataPath(), "app.db");
+        try {
+          const result = await showSetupWizard(dbPath);
+          if (result.mode === "client" && result.serverUrl) {
+            createClientTray(result.serverUrl);
+            createWindow(result.serverUrl);
+          }
+        } catch {
+          app.quit();
+        }
+      },
+    },
+    { type: "separator" },
+    {
+      label: "Otomatik Başlat",
+      type: "checkbox",
+      checked: autoStartEnabled,
+      click: (menuItem) => {
+        app.setLoginItemSettings({ openAtLogin: menuItem.checked });
+      },
+    },
+    { type: "separator" },
+    {
+      label: "Çıkış",
+      click: () => {
+        mainWindow?.destroy();
+        mainWindow = null;
+        app.quit();
+      },
+    },
+  ]);
+
+  tray.setContextMenu(menu);
+  tray.on("double-click", () => {
+    if (mainWindow) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
+// ──── SERVER MODE BOOT ────
+async function bootServer(): Promise<void> {
+  const dataPath = getDataPath();
+  const dbPath = path.join(dataPath, "app.db");
+  const migrationsFolder = getResourcePath("drizzle");
+
+  try {
+    runMigrations(dbPath, migrationsFolder);
+  } catch (err) {
+    console.error("[Migration]", err);
+  }
+
+  if (needsSetup(dbPath)) {
+    try {
+      await showSetupWizard(dbPath);
+    } catch {
+      app.quit();
+      return;
+    }
+  }
+
+  try {
+    await startNextServer();
+  } catch (err) {
+    dialog.showErrorBox(
+      "Sunucu başlatılamadı",
+      `Next.js sunucusu başlatılamadı:\n${err instanceof Error ? err.message : String(err)}`,
+    );
+    app.quit();
+    return;
+  }
+
+  startAutoBackup(dbPath, dataPath);
+
+  const config = loadConfig();
+  const officeName = config?.officeName ?? "DAS Case";
+
+  try {
+    discoverySocket = startDiscoveryServer(officeName, PORT, app.getVersion());
+  } catch (err) {
+    console.error("[Discovery]", err);
+  }
+
+  createServerTray();
+  createWindow(`http://localhost:${PORT}`);
+  initAutoUpdater();
+}
+
+// ──── CLIENT MODE BOOT ────
+async function bootClient(serverUrl: string): Promise<void> {
+  createClientTray(serverUrl);
+  createWindow(serverUrl);
+  initAutoUpdater();
+}
+
+// ──── INITIAL SETUP (first launch) ────
+async function bootFirstLaunch(): Promise<void> {
+  const dataPath = getDataPath();
+  const dbPath = path.join(dataPath, "app.db");
+  const migrationsFolder = getResourcePath("drizzle");
+
+  try {
+    runMigrations(dbPath, migrationsFolder);
+  } catch (err) {
+    console.error("[Migration]", err);
+  }
+
+  let result: SetupResult;
+  try {
+    result = await showSetupWizard(dbPath);
+  } catch {
+    app.quit();
+    return;
+  }
+
+  currentMode = result.mode;
+
+  if (result.mode === "server") {
+    await bootServer();
+  } else if (result.serverUrl) {
+    await bootClient(result.serverUrl);
+  } else {
+    app.quit();
+  }
+}
+
+// ──── ENTRY POINT ────
 const gotLock = app.requestSingleInstanceLock();
 
 if (!gotLock) {
@@ -249,46 +457,42 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
-    const dataPath = getDataPath();
-    const dbPath = path.join(dataPath, "app.db");
-    const migrationsFolder = getResourcePath("drizzle");
+    currentMode = getAppMode();
 
-    try {
-      runMigrations(dbPath, migrationsFolder);
-    } catch (err) {
-      console.error("[Migration]", err);
+    if (currentMode === "server") {
+      await bootServer();
+    } else if (currentMode === "client") {
+      const serverUrl = getServerUrl();
+      await bootClient(serverUrl);
+    } else {
+      await bootFirstLaunch();
     }
-
-    if (needsSetup(dbPath)) {
-      try {
-        await showSetupWizard(dbPath);
-      } catch {
-        app.quit();
-        return;
-      }
-    }
-
-    try {
-      await startNextServer();
-    } catch (err) {
-      dialog.showErrorBox(
-        "Sunucu başlatılamadı",
-        `Next.js sunucusu başlatılamadı:\n${err instanceof Error ? err.message : String(err)}`,
-      );
-      app.quit();
-      return;
-    }
-
-    createTray();
-    createWindow();
-    initAutoUpdater();
   });
 
   app.on("window-all-closed", () => {
-    // Keep running in tray
+    /* Keep running in tray */
   });
 
   app.on("before-quit", () => {
+    stopAutoBackup();
+
+    const dataPath = getDataPath();
+    const dbPath = path.join(dataPath, "app.db");
+    const result = checkpointAndVerify(dbPath);
+    if (!result.ok) {
+      console.error("[Shutdown] DB integrity issue:", result.error);
+    }
+
+    runBackup(dbPath, dataPath);
+
+    if (discoverySocket) {
+      try {
+        discoverySocket.close();
+      } catch {
+        /* already closed */
+      }
+      discoverySocket = null;
+    }
     if (serverProcess) {
       serverProcess.kill();
       serverProcess = null;
