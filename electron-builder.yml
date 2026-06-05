@@ -39,7 +39,7 @@ nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   installerLanguages:
-    - Turkish
+    - tr_TR
   language: 1055
   deleteAppDataOnUninstall: false
   createDesktopShortcut: true
