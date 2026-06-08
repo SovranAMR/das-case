@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { DasBrandLink } from "@/components/brand/das-brand-link";
 import { DasAppFooter } from "@/components/layout/das-app-footer";
@@ -8,11 +8,52 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 
+declare global {
+  interface Window {
+    dasApp?: {
+      getMode: () => Promise<"server" | "client" | null>;
+      forgotAdminPassword: () => Promise<{ ok: boolean; reason?: string }>;
+    };
+  }
+}
+
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [recoveryAvailable, setRecoveryAvailable] = useState(false);
+  const [recoveryMsg, setRecoveryMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    // window.dasApp yalnizca Electron preload'unda bulunur; SSR/hydration
+    // uyumu icin mount sonrasi tespit ediyoruz (sunucuda window yok).
+    if (typeof window !== "undefined" && window.dasApp) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setRecoveryAvailable(true);
+    }
+  }, []);
+
+  async function handleForgot() {
+    setRecoveryMsg(null);
+    setError(null);
+    if (!window.dasApp) return;
+    try {
+      const res = await window.dasApp.forgotAdminPassword();
+      if (res.reason === "client") {
+        setRecoveryMsg(
+          "Yönetici erişimi yalnızca sunucu (ana) bilgisayarda sıfırlanabilir. " +
+            "Lütfen DAS Case'in sunucu modunda kurulu olduğu bilgisayarda bu işlemi yapın.",
+        );
+      } else if (res.ok) {
+        setRecoveryMsg(
+          "İşlem tamamlandı. Yeni belirlediğiniz bilgilerle giriş yapabilirsiniz.",
+        );
+      }
+    } catch {
+      setRecoveryMsg("İşlem başlatılamadı. Lütfen tekrar deneyin.");
+    }
+  }
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -69,6 +110,21 @@ function LoginForm() {
           {loading ? "Giriş yapılıyor..." : "Giriş Yap"}
         </Button>
       </form>
+
+      {recoveryAvailable && (
+        <div className="mt-5 border-t border-border/60 pt-4">
+          <button
+            type="button"
+            onClick={handleForgot}
+            className="text-sm text-text-secondary underline underline-offset-2 transition-colors hover:text-text-primary"
+          >
+            Yönetici hesabıma erişemiyorum
+          </button>
+          {recoveryMsg && (
+            <p className="mt-2 text-sm text-text-secondary">{recoveryMsg}</p>
+          )}
+        </div>
+      )}
     </Card>
   );
 }

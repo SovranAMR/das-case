@@ -7,6 +7,7 @@ import {
   Menu,
   nativeImage,
   clipboard,
+  ipcMain,
 } from "electron";
 import { autoUpdater } from "electron-updater";
 import { ChildProcess, spawn, execFile } from "child_process";
@@ -316,6 +317,7 @@ function createWindow(url: string): void {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      preload: path.join(__dirname, "app-preload.js"),
     },
     show: false,
   });
@@ -687,6 +689,45 @@ async function bootFirstLaunch(): Promise<void> {
     app.quit();
   }
 }
+
+// ──── GIRIS EKRANI KURTARMA KOPRUSU ────
+// Yonetici sifresini unutan kullanici icin giris ekranindan tetiklenir.
+// Guvenlik: yalnizca sunucu makinesinde (DB'nin bulundugu, fiziksel erisim
+// gerektiren bilgisayar) calisir; istemcilerde reddedilir.
+ipcMain.handle("das-get-mode", () => currentMode);
+
+ipcMain.handle("das-forgot-admin", async () => {
+  if (currentMode !== "server") {
+    return { ok: false, reason: "client" };
+  }
+
+  const { response } = await dialog.showMessageBox({
+    type: "question",
+    buttons: ["İptal", "Şifreyi Sıfırla", "Tüm Verileri Sil"],
+    defaultId: 1,
+    cancelId: 0,
+    title: "Yönetici Erişimi",
+    message: "Yönetici hesabına nasıl erişmek istiyorsunuz?",
+    detail:
+      "Şifreyi Sıfırla: Mevcut yönetici hesabına yeni bir şifre belirler. " +
+      "Tüm dosya, iş ve kullanıcı verileri korunur.\n\n" +
+      "Tüm Verileri Sil: Önce yedek alır, sonra her şeyi sıfırlayıp ilk " +
+      "kurulum (yeni yönetici oluşturma) ekranını açar. Geri alınamaz.",
+  });
+
+  if (response === 1) {
+    const dbPath = path.join(getDataPath(), "app.db");
+    const done = await showAdminResetWizard(dbPath);
+    return { ok: done };
+  }
+
+  if (response === 2) {
+    void resetAllData();
+    return { ok: true };
+  }
+
+  return { ok: false, reason: "cancel" };
+});
 
 // ──── ENTRY POINT ────
 const gotLock = app.requestSingleInstanceLock();
