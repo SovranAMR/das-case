@@ -22,6 +22,12 @@ extraResources:
     to: app
     filter:
       - "**/*"
+  # electron-builder, bir klasoru extraResources olarak kopyalarken icindeki
+  # node_modules'u atlar; standalone calismasi icin ayri entry ile zorluyoruz.
+  - from: .next/standalone/node_modules
+    to: app/node_modules
+    filter:
+      - "**/*"
   - from: assets
     to: app/assets
     filter:
