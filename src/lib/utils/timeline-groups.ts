@@ -1,10 +1,10 @@
-import { format, isSameDay, isThisWeek, isToday, isYesterday } from "date-fns";
+import { format, isSameDay, isSameWeek, subDays } from "date-fns";
 import { tr } from "date-fns/locale";
 
 export function getTimelineGroupLabel(date: Date, now = new Date()): string {
-  if (isToday(date)) return "Bugün";
-  if (isYesterday(date)) return "Dün";
-  if (isThisWeek(date, { weekStartsOn: 1 })) return "Bu hafta";
+  if (isSameDay(date, now)) return "Bugün";
+  if (isSameDay(date, subDays(now, 1))) return "Dün";
+  if (isSameWeek(date, now, { weekStartsOn: 1 })) return "Bu hafta";
   return format(date, "MMMM yyyy", { locale: tr });
 }
 

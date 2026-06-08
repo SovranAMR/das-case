@@ -20,7 +20,7 @@ export async function GET() {
   return Response.json({
     app: "das-case",
     name: officeName,
-    version: "1.0.0",
+    version: process.env.APP_VERSION ?? process.env.npm_package_version ?? "1.0.1",
     port: parseInt(process.env.PORT ?? "3000", 10),
   });
 }

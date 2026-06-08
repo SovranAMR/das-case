@@ -9,10 +9,12 @@ import {
   clipboard,
 } from "electron";
 import { autoUpdater } from "electron-updater";
-import { ChildProcess, fork } from "child_process";
+import { ChildProcess, spawn, execFile } from "child_process";
 import path from "path";
 import fs from "fs";
+import http from "http";
 import { networkInterfaces } from "os";
+import { randomBytes } from "crypto";
 import {
   needsSetup,
   runMigrations,
@@ -43,6 +45,23 @@ let tray: Tray | null = null;
 let serverProcess: ChildProcess | null = null;
 let discoverySocket: dgram.Socket | null = null;
 let currentMode: AppMode | null = null;
+let updaterInitialized = false;
+
+function getLogPath(): string {
+  const dir = path.join(app.getPath("userData"), "logs");
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, "main.log");
+}
+
+function logLine(message: string): void {
+  const line = `[${new Date().toISOString()}] ${message}\n`;
+  try {
+    fs.appendFileSync(getLogPath(), line, "utf-8");
+  } catch {
+    /* logging must not break app startup */
+  }
+  console.error(message);
+}
 
 function getResourcePath(...segments: string[]): string {
   const base = isDev
@@ -75,6 +94,75 @@ function getLanAddress(): string {
   return `http://localhost:${PORT}`;
 }
 
+function runNetsh(args: string[]): Promise<{ ok: boolean; output: string }> {
+  return new Promise((resolve) => {
+    execFile("netsh", args, { windowsHide: true }, (err, stdout, stderr) => {
+      resolve({ ok: !err, output: `${stdout ?? ""}${stderr ?? ""}` });
+    });
+  });
+}
+
+/**
+ * Server modunda gelen baglantilar icin firewall kurallarini garanti altina alir.
+ * Installer kurali ekleyemediyse (admin degil / per-user kurulum) burada tekrar denenir.
+ * Admin yetkisi yoksa netsh basarisiz olur; kullaniciya tek seferlik net uyari gosterilir.
+ */
+async function ensureServerFirewallRules(): Promise<void> {
+  if (process.platform !== "win32") return;
+
+  const rules = [
+    { name: "DAS Case HTTP", protocol: "TCP", port: String(PORT) },
+    { name: "DAS Case Discovery", protocol: "UDP", port: "41520" },
+  ];
+
+  let addFailed = false;
+
+  for (const rule of rules) {
+    const existing = await runNetsh([
+      "advfirewall",
+      "firewall",
+      "show",
+      "rule",
+      `name=${rule.name}`,
+    ]);
+    if (existing.ok) {
+      continue;
+    }
+
+    const added = await runNetsh([
+      "advfirewall",
+      "firewall",
+      "add",
+      "rule",
+      `name=${rule.name}`,
+      "dir=in",
+      "action=allow",
+      `protocol=${rule.protocol}`,
+      `localport=${rule.port}`,
+      "profile=any",
+    ]);
+
+    if (added.ok) {
+      logLine(`[Firewall] kural eklendi: ${rule.name}`);
+    } else {
+      addFailed = true;
+      logLine(`[Firewall] kural eklenemedi: ${rule.name} — ${added.output.trim()}`);
+    }
+  }
+
+  if (addFailed) {
+    dialog.showMessageBox({
+      type: "warning",
+      title: "Güvenlik duvarı uyarısı",
+      message: "Ağ bağlantısı için güvenlik duvarı kuralı eklenemedi.",
+      detail:
+        "Diğer bilgisayarların bu sunucuya bağlanabilmesi için yönetici izni gerekiyor. " +
+        "DAS Case'i sağ tıklayıp 'Yönetici olarak çalıştır' ile bir kez açın ya da " +
+        "Windows Güvenlik Duvarı'nda TCP 3000 ve UDP 41520 portlarına gelen bağlantıya izin verin.",
+    });
+  }
+}
+
 function startNextServer(): Promise<void> {
   return new Promise((resolve, reject) => {
     const serverJs = getStandalonePath("server.js");
@@ -92,6 +180,8 @@ function startNextServer(): Promise<void> {
       HOSTNAME: "0.0.0.0",
       DATABASE_URL: dbPath,
       NODE_ENV: "production",
+      APP_VERSION: app.getVersion(),
+      ELECTRON_RUN_AS_NODE: "1",
     };
 
     if (!process.env.SESSION_SECRET) {
@@ -100,39 +190,111 @@ function startNextServer(): Promise<void> {
       if (fs.existsSync(secretPath)) {
         secret = fs.readFileSync(secretPath, "utf-8").trim();
       } else {
-        const { randomBytes } = require("crypto");
         secret = randomBytes(32).toString("hex");
         fs.writeFileSync(secretPath, secret, { mode: 0o600 });
       }
       env.SESSION_SECRET = secret;
     }
 
-    serverProcess = fork(serverJs, [], {
+    logLine(`[NextServer] starting: ${serverJs}`);
+
+    let settled = false;
+    let lastOutput = "";
+
+    function finish(err?: Error) {
+      if (settled) return;
+      settled = true;
+      if (err) reject(err);
+      else resolve();
+    }
+
+    function rememberOutput(prefix: string, data: Buffer) {
+      const msg = data.toString();
+      lastOutput = `${lastOutput}${prefix} ${msg}`.slice(-8000);
+      logLine(`${prefix} ${msg.trim()}`);
+    }
+
+    function waitForHttpReady(deadlineMs: number) {
+      const startedAt = Date.now();
+      const check = () => {
+        if (settled) return;
+
+        const req = http.get(`http://127.0.0.1:${PORT}/api/discovery`, (res) => {
+          let body = "";
+          res.setEncoding("utf-8");
+          res.on("data", (chunk: string) => {
+            body += chunk;
+          });
+          res.on("end", () => {
+            try {
+              const payload = JSON.parse(body) as { app?: string };
+              if (res.statusCode === 200 && payload.app === "das-case") {
+                logLine(`[NextServer] ready on port ${PORT}`);
+                finish();
+                return;
+              }
+            } catch {
+              /* another process may be serving this port */
+            }
+            retry();
+          });
+        });
+
+        req.on("error", retry);
+        req.setTimeout(1000, () => {
+          req.destroy();
+          retry();
+        });
+      };
+
+      const retry = () => {
+        if (settled) return;
+        if (Date.now() - startedAt >= deadlineMs) {
+          finish(
+            new Error(
+              `Sunucu ${Math.round(deadlineMs / 1000)} saniye içinde hazır olmadı. Log: ${getLogPath()}\n${lastOutput}`,
+            ),
+          );
+          return;
+        }
+        setTimeout(check, 500);
+      };
+
+      check();
+    }
+
+    serverProcess = spawn(process.execPath, [serverJs], {
       env,
       stdio: "pipe",
       cwd: path.dirname(serverJs),
     });
 
     serverProcess.stdout?.on("data", (data: Buffer) => {
-      const msg = data.toString();
-      if (msg.includes("Ready") || msg.includes("started server")) {
-        resolve();
-      }
+      rememberOutput("[NextServer:stdout]", data);
     });
 
     serverProcess.stderr?.on("data", (data: Buffer) => {
-      console.error("[NextServer]", data.toString());
+      rememberOutput("[NextServer:stderr]", data);
     });
 
-    serverProcess.on("error", reject);
+    serverProcess.on("error", (err) => {
+      logLine(`[NextServer] spawn error: ${err.message}`);
+      finish(err);
+    });
     serverProcess.on("exit", (code) => {
-      if (code !== 0 && code !== null) {
-        console.error(`[NextServer] exited with code ${code}`);
+      if (!settled) {
+        const err = new Error(
+          `Sunucu hazır olmadan kapandı (kod ${code ?? "bilinmiyor"}). Log: ${getLogPath()}\n${lastOutput}`,
+        );
+        logLine(`[NextServer] exited before ready with code ${code ?? "unknown"}`);
+        finish(err);
+      } else if (code !== 0 && code !== null) {
+        logLine(`[NextServer] exited with code ${code}`);
       }
       serverProcess = null;
     });
 
-    setTimeout(resolve, 5000);
+    waitForHttpReady(30_000);
   });
 }
 
@@ -152,7 +314,14 @@ function createWindow(url: string): void {
   });
 
   mainWindow.once("ready-to-show", () => mainWindow?.show());
-  mainWindow.loadURL(url);
+  mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl) => {
+    logLine(`[Window] did-fail-load ${errorCode} ${errorDescription} ${validatedUrl}`);
+    dialog.showErrorBox(
+      "DAS Case açılamadı",
+      `Sayfa yüklenemedi:\n${validatedUrl}\n\n${errorDescription}\n\nLog: ${getLogPath()}`,
+    );
+  });
+  void mainWindow.loadURL(url);
 
   mainWindow.on("close", (e) => {
     e.preventDefault();
@@ -390,6 +559,8 @@ async function bootServer(): Promise<void> {
 
   startAutoBackup(dbPath, dataPath);
 
+  await ensureServerFirewallRules();
+
   const config = loadConfig();
   const officeName = config?.officeName ?? "DAS Case";
 
@@ -456,6 +627,7 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
+    initAutoUpdater();
     currentMode = getAppMode();
 
     if (currentMode === "server") {
@@ -501,6 +673,8 @@ if (!gotLock) {
 
 function initAutoUpdater(): void {
   if (isDev) return;
+  if (updaterInitialized) return;
+  updaterInitialized = true;
 
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
