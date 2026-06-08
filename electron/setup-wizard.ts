@@ -2,9 +2,10 @@ import { BrowserWindow, ipcMain } from "electron";
 import path from "path";
 import fs from "fs";
 import Database from "better-sqlite3";
+import bcrypt from "bcryptjs";
 import { randomUUID } from "crypto";
 import { saveConfig, type AppMode } from "./client-config";
-import { scanForServers, type DiscoveredServer } from "./lan-discovery";
+import { scanForServers } from "./lan-discovery";
 
 export function needsSetup(dbPath: string): boolean {
   if (!fs.existsSync(dbPath)) return true;
@@ -47,7 +48,6 @@ export type SetupResult = {
 };
 
 async function createAdmin(dbPath: string, data: SetupData): Promise<void> {
-  const bcrypt = require("bcryptjs");
   const hash = await bcrypt.hash(data.password, 12);
   const sqlite = new Database(dbPath);
   sqlite.pragma("foreign_keys = ON");
@@ -409,4 +409,197 @@ function getSetupHTML(): string {
 
 </body>
 </html>`;
+}
+
+type AdminRow = { id: string; email: string; name: string };
+
+/**
+ * Yonetici sifresini sifirlama penceresi. Veri korunur; sadece secilen
+ * yonetici hesabinin password_hash'i guncellenir (FK-safe).
+ * Cozulen sorun: ilk kurulumda belirlenen sifre unutuldugunda giris yapilamiyor.
+ */
+export function showAdminResetWizard(dbPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    let admins: AdminRow[] = [];
+    try {
+      const sqlite = new Database(dbPath, { readonly: true });
+      admins = sqlite
+        .prepare(
+          "SELECT id, email, name FROM users WHERE role = 'ADMIN' ORDER BY created_at ASC",
+        )
+        .all() as AdminRow[];
+      sqlite.close();
+    } catch {
+      /* tablo yoksa bos liste */
+    }
+
+    if (admins.length === 0) {
+      resolve(false);
+      return;
+    }
+
+    const win = new BrowserWindow({
+      width: 480,
+      height: 460,
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      title: "DAS Case — Yönetici Şifresi",
+      backgroundColor: "#F7F4EF",
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        preload: path.join(__dirname, "setup-preload.js"),
+      },
+    });
+    win.setMenuBarVisibility(false);
+
+    win.loadURL(
+      `data:text/html;charset=utf-8,${encodeURIComponent(getResetHTML(admins))}`,
+    );
+
+    function cleanup() {
+      ipcMain.removeAllListeners("reset-submit");
+      ipcMain.removeAllListeners("reset-cancel");
+    }
+
+    ipcMain.on(
+      "reset-submit",
+      async (_event, data: { userId: string; password: string }) => {
+        try {
+          const hash = await bcrypt.hash(data.password, 12);
+          const sqlite = new Database(dbPath);
+          const result = sqlite
+            .prepare(
+              "UPDATE users SET password_hash = ?, must_change_password = 0, active = 1 WHERE id = ? AND role = 'ADMIN'",
+            )
+            .run(hash, data.userId);
+          sqlite.close();
+          if (result.changes === 0) {
+            win.webContents.send("setup-error", "Hesap bulunamadı.");
+            return;
+          }
+          cleanup();
+          win.close();
+          resolve(true);
+        } catch (err) {
+          win.webContents.send(
+            "setup-error",
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      },
+    );
+
+    ipcMain.on("reset-cancel", () => {
+      cleanup();
+      win.close();
+      resolve(false);
+    });
+
+    win.on("closed", () => {
+      cleanup();
+      resolve(false);
+    });
+  });
+}
+
+function getResetHTML(admins: AdminRow[]): string {
+  const options = admins
+    .map(
+      (a) =>
+        `<option value="${a.id}">${escapeHtml(a.name)} — ${escapeHtml(a.email)}</option>`,
+    )
+    .join("");
+
+  return `<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: Inter, system-ui, sans-serif;
+    background: #F7F4EF; color: #151515;
+    padding: 36px 32px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .label {
+    font-family: ui-monospace, monospace;
+    font-size: 11px; letter-spacing: 0.15em;
+    text-transform: uppercase; color: #5c5c5c; margin-bottom: 8px;
+  }
+  h1 { font-family: 'Instrument Serif', Georgia, serif; font-size: 26px; margin-bottom: 8px; }
+  .subtitle { color: #5a5a5a; font-size: 14px; line-height: 1.5; margin-bottom: 24px; }
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 5px; }
+  .field input, .field select {
+    width: 100%; padding: 10px 12px;
+    border: 1px solid rgba(0,0,0,0.12); border-radius: 4px;
+    font-size: 14px; background: white; outline: none;
+  }
+  .field input:focus, .field select:focus { border-color: #151515; }
+  button { padding: 11px 24px; font-size: 14px; font-weight: 500; border: none; cursor: pointer; border-radius: 4px; }
+  .btn-primary { background: #151515; color: #F7F4EF; }
+  .btn-secondary { background: transparent; border: 1px solid rgba(0,0,0,0.12); color: #5a5a5a; }
+  .actions { display: flex; gap: 12px; margin-top: 20px; }
+  .error { color: #dc2626; font-size: 13px; margin-top: 8px; display: none; }
+</style>
+</head>
+<body>
+  <p class="label">Yönetici Şifresi</p>
+  <h1>Şifreyi Sıfırla</h1>
+  <p class="subtitle">Giriş yapamadığınız yönetici hesabına yeni bir şifre belirleyin. Verileriniz korunur.</p>
+  <form id="resetForm">
+    <div class="field">
+      <label>Yönetici Hesabı</label>
+      <select id="userId" required>${options}</select>
+    </div>
+    <div class="field">
+      <label>Yeni Şifre * (min 8 karakter)</label>
+      <input id="password" type="password" required minlength="8" />
+    </div>
+    <div class="field">
+      <label>Yeni Şifre (Tekrar) *</label>
+      <input id="confirm" type="password" required minlength="8" />
+    </div>
+    <p class="error" id="resetError"></p>
+    <div class="actions">
+      <button type="button" class="btn-secondary" onclick="window.setupBridge.cancelReset()">İptal</button>
+      <button type="submit" class="btn-primary" style="flex:1">Şifreyi Kaydet</button>
+    </div>
+  </form>
+<script>
+  document.getElementById('resetForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const pw = document.getElementById('password').value;
+    const confirm = document.getElementById('confirm').value;
+    const errEl = document.getElementById('resetError');
+    if (pw !== confirm) {
+      errEl.textContent = 'Şifreler eşleşmiyor.';
+      errEl.style.display = 'block';
+      return;
+    }
+    errEl.style.display = 'none';
+    window.setupBridge.submitReset({
+      userId: document.getElementById('userId').value,
+      password: pw,
+    });
+  });
+  window.setupBridge.onError((msg) => {
+    const errEl = document.getElementById('resetError');
+    errEl.textContent = msg;
+    errEl.style.display = 'block';
+  });
+</script>
+</body>
+</html>`;
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }

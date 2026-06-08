@@ -19,6 +19,7 @@ import {
   needsSetup,
   runMigrations,
   showSetupWizard,
+  showAdminResetWizard,
   type SetupResult,
 } from "./setup-wizard";
 import {
@@ -39,6 +40,11 @@ import type dgram from "dgram";
 
 const PORT = 3000;
 const isDev = !app.isPackaged;
+
+// Windows/Linux'ta Chromium metin kenarlarini puruzlu render edebiliyor;
+// hinting'i kapatmak ve sRGB profili zorlamak yaziyi netlestirir.
+app.commandLine.appendSwitch("font-render-hinting", "none");
+app.commandLine.appendSwitch("force-color-profile", "srgb");
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -306,6 +312,7 @@ function createWindow(url: string): void {
     minHeight: 600,
     title: "DAS Case",
     icon: getIconPath(),
+    backgroundColor: "#F7F4EF",
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -410,6 +417,29 @@ function createServerTray(): void {
     },
     { type: "separator" },
     {
+      label: "Yönetici Şifresini Sıfırla",
+      click: () => {
+        const dbPath = path.join(getDataPath(), "app.db");
+        void showAdminResetWizard(dbPath).then((done) => {
+          if (done) {
+            dialog.showMessageBox({
+              type: "info",
+              title: "Şifre güncellendi",
+              message:
+                "Yönetici şifresi güncellendi. Yeni şifreyle giriş yapabilirsiniz.",
+            });
+          }
+        });
+      },
+    },
+    {
+      label: "Tüm Verileri Sil ve Yeniden Kur",
+      click: () => {
+        void resetAllData();
+      },
+    },
+    { type: "separator" },
+    {
       label: "Otomatik Başlat",
       type: "checkbox",
       checked: autoStartEnabled,
@@ -435,6 +465,51 @@ function createServerTray(): void {
       mainWindow.focus();
     }
   });
+}
+
+/**
+ * Fabrika ayarlari: tum yerel verileri siler ve uygulamayi ilk kurulum
+ * ekranina dondurur. Geri alinamaz; once otomatik yedek alinir.
+ */
+async function resetAllData(): Promise<void> {
+  const { response } = await dialog.showMessageBox({
+    type: "warning",
+    buttons: ["İptal", "Tüm Verileri Sil"],
+    defaultId: 0,
+    cancelId: 0,
+    title: "Tüm Verileri Sil",
+    message: "Bütün dosya, iş ve kullanıcı verileri silinsin mi?",
+    detail:
+      "Bu işlem geri alınamaz. Tüm veriler silinir ve uygulama ilk kurulum ekranıyla yeniden başlar. " +
+      "Silmeden önce mevcut verinin bir yedeği otomatik olarak alınır.",
+  });
+  if (response !== 1) return;
+
+  const dataPath = getDataPath();
+  const dbPath = path.join(dataPath, "app.db");
+
+  try {
+    runBackup(dbPath, dataPath);
+  } catch (err) {
+    logLine(`[Reset] yedek alinamadi: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  if (serverProcess) {
+    serverProcess.kill();
+    serverProcess = null;
+  }
+
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const file = `${dbPath}${suffix}`;
+    try {
+      if (fs.existsSync(file)) fs.rmSync(file);
+    } catch (err) {
+      logLine(`[Reset] ${file} silinemedi: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  app.relaunch();
+  app.exit(0);
 }
 
 // ──── CLIENT MODE TRAY ────

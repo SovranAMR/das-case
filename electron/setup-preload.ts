@@ -21,6 +21,12 @@ contextBridge.exposeInMainWorld("setupBridge", {
   cancel: () => {
     ipcRenderer.send("setup-cancel");
   },
+  submitReset: (data: { userId: string; password: string }) => {
+    ipcRenderer.send("reset-submit", data);
+  },
+  cancelReset: () => {
+    ipcRenderer.send("reset-cancel");
+  },
   onShowPage: (cb: (page: string) => void) => {
     ipcRenderer.on("show-page", (_e, page: string) => cb(page));
   },
